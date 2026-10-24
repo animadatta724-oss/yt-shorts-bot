@@ -110,8 +110,15 @@ def ask_approval(path, title):
 
 
 # ================= Gemini =================
-def pick_model():
-    """Gemini ke available models me se sabse naya 'flash' model dhoondhta hai."""
+_MODELS = None
+
+
+def model_candidates():
+    """Available Gemini flash models ki priority list (503/429 par agla model try hota hai)."""
+    global _MODELS
+    if _MODELS is not None:
+        return _MODELS
+    names = []
     try:
         r = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
                          params={"key": E["GEMINI_API_KEY"], "pageSize": 200}, timeout=60)
@@ -119,48 +126,69 @@ def pick_model():
                  if "generateContent" in m.get("supportedGenerationMethods", [])]
     except Exception as ex:
         print("model list error:", ex)
-        return None
-    bad = ("lite", "image", "tts", "live", "audio", "embedding", "robotics", "computer", "vision", "thinking")
-    cand = [n for n in names if "flash" in n and not any(x in n for x in bad)]
-    stable = [n for n in cand if not any(x in n for x in ("preview", "exp"))]
-    pool = stable or cand
+    bad = ("image", "tts", "live", "audio", "embedding", "robotics", "computer", "vision", "thinking")
+    flash = [n for n in names if "flash" in n and not any(x in n for x in bad)]
 
     def ver(n):
         m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
         return float(m.group(1)) if m else 0.0
-    return max(pool, key=lambda n: (ver(n), -len(n))) if pool else None
+
+    def key(n):
+        return (-ver(n), len(n))
+    stable = sorted([n for n in flash if ver(n) > 0 and not any(x in n for x in ("preview", "exp", "lite"))], key=key)
+    alias = [n for n in flash if n == "gemini-flash-latest"]
+    lite = sorted([n for n in flash if "lite" in n and "preview" not in n], key=key)
+    prev = sorted([n for n in flash if any(x in n for x in ("preview", "exp")) and "lite" not in n], key=key)
+    order = ([E["GEMINI_MODEL"]] if E.get("GEMINI_MODEL") else []) + stable[:2] + alias + stable[2:] + lite[:1] + prev[:1]
+    if not order:
+        order = [MODEL, "gemini-flash-latest", "gemini-2.0-flash"]
+    seen = []
+    for n in order:
+        if n not in seen:
+            seen.append(n)
+    _MODELS = seen[:6]
+    print("Gemini models:", _MODELS)
+    return _MODELS
 
 
 def gemini(prompt, search=False, temp=1.0):
-    global MODEL
     body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": temp}}
     if search:
         body["tools"] = [{"google_search": {}}]
     else:
         body["generationConfig"]["responseMimeType"] = "application/json"
-    r = None
-    for _ in range(4):
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={E['GEMINI_API_KEY']}"
-        r = requests.post(url, json=body, timeout=180)
-        if r.status_code == 404:
-            new = pick_model()
-            if new and new != MODEL:
-                print("Gemini model badla:", MODEL, "->", new)
-                MODEL = new
+    models = model_candidates()
+    if search:
+        models = models[:3]
+    last = None
+    for m in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={E['GEMINI_API_KEY']}"
+        for attempt in range(2):
+            last = requests.post(url, json=body, timeout=180)
+            if last.status_code == 200:
+                break
+            print("Gemini", m, last.status_code, last.text[:160].replace("\n", " "))
+            if last.status_code in (429, 500, 503) and attempt == 0:
+                time.sleep(15)
                 continue
             break
-        if r.status_code in (429, 500, 503):
-            time.sleep(25)
-            continue
-        break
-    if r.status_code != 200:
-        print("Gemini error", r.status_code, r.text[:300])
-    if search and r.status_code != 200:
+        if last.status_code == 200:
+            if m in _MODELS:  # chalne wala model agli baar sabse pehle try hoga
+                _MODELS.remove(m)
+                _MODELS.insert(0, m)
+            parts = last.json()["candidates"][0]["content"]["parts"]
+            txt = "".join(p.get("text", "") for p in parts)
+            try:
+                return json.loads(re.search(r"\{.*\}", txt, re.S).group(0))
+            except Exception as ex:
+                print("Gemini JSON parse error:", ex)
+                continue
+        if search and last.status_code == 400:  # search tool is model par supported nahi
+            break
+    if search:
         return gemini(prompt, search=False, temp=temp)
-    r.raise_for_status()
-    parts = r.json()["candidates"][0]["content"]["parts"]
-    txt = "".join(p.get("text", "") for p in parts)
-    return json.loads(re.search(r"\{.*\}", txt, re.S).group(0))
+    last.raise_for_status()
+    raise RuntimeError("Gemini se valid jawab nahi mila")
 
 
 # ================= Feature 3: trending topics =================
