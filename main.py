@@ -380,8 +380,8 @@ def gen_script(avoid, feedback, trend, remake=None):
 "category": one of space/science/body/animals/history/india/psychology/tech/other
 "hooks": object with keys "question","number","shock": three different Hindi (Devanagari) on-screen opening texts for the SAME fact, max 6 words each ("question" = curious question, "number" = contains a striking number/statistic, "shock" = surprising claim)
 "titles": object with keys "question","number","shock": three different Hindi titles for the SAME fact, max 60 chars each, no hashtags, main search keyword within the first 40 chars, curiosity-driven but truthful (no fake clickbait)
-"script": list of 6-8 short Hindi sentences (Devanagari), TOTAL 60-80 words (video must be 25-30 seconds). Sentence 1 = strong curiosity hook. No filler. The LAST sentence must be a teaser/cliffhanger that flows naturally back into sentence 1 so the video loops seamlessly when replayed. Do NOT say subscribe/follow in the script.
-"image_prompts": list with exactly as many items as script; each an English visual scene description for that sentence (no text, no logos, no real celebrities)
+"script": list of 6-8 short Hindi sentences (Devanagari), TOTAL 50-65 words (video must be 25-30 seconds). Sentence 1 = strong curiosity hook. No filler. The LAST sentence must be a teaser/cliffhanger that flows naturally back into sentence 1 so the video loops seamlessly when replayed. Do NOT say subscribe/follow in the script.
+"image_prompts": list with exactly as many items as script; each an English photorealistic, CONCRETE and LITERAL scene showing exactly the thing that sentence talks about (specific subject, setting, lighting, camera angle); no abstract art, no symbols, no text, no logos, no real celebrities
 "keywords": 4 English stock-video search terms
 "comment": one engaging Hindi question for viewers (max 100 chars) to post as the first comment, related to the fact
 "description": Hindi description, 2-3 lines; the FIRST sentence must contain the main keyword phrase; end with a line asking viewers to subscribe for daily facts
@@ -403,23 +403,25 @@ Return ONLY JSON: {{"verdict":"ok" or "fix" or "reject","issues":"short English 
 
 # ================= voice =================
 async def tts(text, out, voice):
-    await edge_tts.Communicate(text, voice, rate="+5%").save(out)
+    await edge_tts.Communicate(text, voice, rate="+10%").save(out)
 
 
 # ================= Feature 2: AI images + Ken Burns =================
 def make_image(prompt, out, seed):
-    full = (prompt[:280] + ", cinematic lighting, vertical composition, highly detailed, no text, no watermark")
-    url = ("https://image.pollinations.ai/prompt/" + urllib.parse.quote(full) +
-           f"?width=1080&height=1920&nologo=true&seed={seed}")
-    for _ in range(3):
+    full = (prompt[:280] + ", photorealistic documentary photo, cinematic lighting, vertical composition, "
+            "highly detailed, no text, no watermark")
+    for k in range(4):
+        url = ("https://image.pollinations.ai/prompt/" + urllib.parse.quote(full) +
+               f"?width=1080&height=1920&nologo=true&seed={seed + k}")
         try:
             r = requests.get(url, timeout=120)
             if r.status_code == 200 and r.headers.get("content-type", "").startswith("image") and len(r.content) > 20000:
                 open(out, "wb").write(r.content)
                 return True
+            print("image status", r.status_code)
         except Exception as ex:
             print("image err", ex)
-        time.sleep(8)
+        time.sleep(10)
     return False
 
 
@@ -522,7 +524,7 @@ def make_seg(i, d, clip, img):
     out = f"{W}/seg{i}.mp4"
     if img:
         z = "min(zoom+0.0012,1.3)" if i % 2 == 0 else "if(eq(on,0),1.3,max(zoom-0.0012,1.0))"
-        vf = ("scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,"
+        vf = ("crop=iw:ih*0.91:0:0,scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,"
               f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={int(d * 30) + 2}:s=1080x1920:fps=30,setsar=1")
         run(["ffmpeg", "-y", "-i", img, "-vf", vf, "-t", f"{d:.2f}", *ENC, out])
     elif clip:
@@ -639,9 +641,9 @@ def build_video(sentences, img_prompts, keywords, hook, voice):
             fc.append(f"[x{k}]adelay={ms}|{ms}[y{k}]")
             mix.append(f"[y{k}]")
     if len(mix) == 1:
-        fc.append("[1:a]anull[a]")
+        fc.append("[1:a]loudnorm=I=-16:TP=-1.5:LRA=11,aresample=44100[a]")
     else:
-        fc.append("".join(mix) + f"amix=inputs={len(mix)}:duration=first:normalize=0[a]")
+        fc.append("".join(mix) + f"amix=inputs={len(mix)}:duration=first:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=44100[a]")
     cmd += ["-filter_complex", ";".join(fc), "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast",
             "-crf", "22", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", f"{W}/final.mp4"]
     run(cmd)
