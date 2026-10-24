@@ -110,20 +110,51 @@ def ask_approval(path, title):
 
 
 # ================= Gemini =================
+def pick_model():
+    """Gemini ke available models me se sabse naya 'flash' model dhoondhta hai."""
+    try:
+        r = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
+                         params={"key": E["GEMINI_API_KEY"], "pageSize": 200}, timeout=60)
+        names = [m["name"].replace("models/", "") for m in r.json().get("models", [])
+                 if "generateContent" in m.get("supportedGenerationMethods", [])]
+    except Exception as ex:
+        print("model list error:", ex)
+        return None
+    bad = ("lite", "image", "tts", "live", "audio", "embedding", "robotics", "computer", "vision", "thinking")
+    cand = [n for n in names if "flash" in n and not any(x in n for x in bad)]
+    stable = [n for n in cand if not any(x in n for x in ("preview", "exp"))]
+    pool = stable or cand
+
+    def ver(n):
+        m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
+        return float(m.group(1)) if m else 0.0
+    return max(pool, key=lambda n: (ver(n), -len(n))) if pool else None
+
+
 def gemini(prompt, search=False, temp=1.0):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={E['GEMINI_API_KEY']}"
+    global MODEL
     body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": temp}}
     if search:
         body["tools"] = [{"google_search": {}}]
     else:
         body["generationConfig"]["responseMimeType"] = "application/json"
     r = None
-    for _ in range(3):
+    for _ in range(4):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={E['GEMINI_API_KEY']}"
         r = requests.post(url, json=body, timeout=180)
+        if r.status_code == 404:
+            new = pick_model()
+            if new and new != MODEL:
+                print("Gemini model badla:", MODEL, "->", new)
+                MODEL = new
+                continue
+            break
         if r.status_code in (429, 500, 503):
             time.sleep(25)
             continue
         break
+    if r.status_code != 200:
+        print("Gemini error", r.status_code, r.text[:300])
     if search and r.status_code != 200:
         return gemini(prompt, search=False, temp=temp)
     r.raise_for_status()
